@@ -3,21 +3,22 @@ using System.Collections.Generic;
 using System.Linq;
 using MongoDB.Bson.Serialization;
 using MongoDB.Driver;
-using MongoDB.Driver.Linq;
 using MongoMembership.Utils;
+using System.Threading.Tasks;
+using MongoDB.Bson;
 
 namespace MongoMembership.Mongo
 {
     internal class MongoGateway : IMongoGateway
     {
-        private readonly MongoDatabase dataBase;
-        private MongoCollection<User> UsersCollection
+        private readonly IMongoDatabase _dataBase;
+        private IMongoCollection<User> UsersCollection
         {
-            get { return dataBase.GetCollection<User>(typeof(User).Name); }
+            get { return _dataBase.GetCollection<User>(typeof(User).Name); }
         }
-        private MongoCollection<Role> RolesCollection
+        private IMongoCollection<Role> RolesCollection
         {
-            get { return dataBase.GetCollection<Role>(typeof(Role).Name); }
+            get { return _dataBase.GetCollection<Role>(typeof(Role).Name); }
         }
 
         static MongoGateway()
@@ -28,19 +29,19 @@ namespace MongoMembership.Mongo
         public MongoGateway(string mongoConnectionString)
         {
             var mongoUrl = new MongoUrl(mongoConnectionString);
-            var server = new MongoClient(mongoUrl).GetServer();
-            dataBase = server.GetDatabase(mongoUrl.DatabaseName);
+            var client = new MongoClient(mongoConnectionString); 
+            _dataBase = client.GetDatabase(mongoUrl.DatabaseName);
             CreateIndex();
         }
 
         public void DropUsers()
         {
-            UsersCollection.Drop();
+            _dataBase.DropCollectionAsync(typeof (User).Name);
         }
 
         public void DropRoles()
         {
-            RolesCollection.Drop();
+            _dataBase.DropCollectionAsync(typeof(Role).Name);
         }
 
         #region User
@@ -49,12 +50,12 @@ namespace MongoMembership.Mongo
             if (user.Username != null) user.UsernameLowercase = user.Username.ToLowerInvariant();
             if (user.Email != null) user.EmailLowercase = user.Email.ToLowerInvariant();
 
-            UsersCollection.Insert(user);
+            UsersCollection.InsertOneAsync(user);
         }
 
         public void UpdateUser(User user)
         {
-            UsersCollection.Save(user);
+            UsersCollection.UpdateOneAsync(Builders<User>.Filter.Eq(m => m.Id, user.Id), user.ToBsonDocument());    
         }
 
         public void RemoveUser(User user)
@@ -63,224 +64,338 @@ namespace MongoMembership.Mongo
             UpdateUser(user);
         }
 
-        public User GetById(string id)
+        public async Task<User> GetById(string id)
         {
-            if (id.IsNullOrWhiteSpace() || UsersCollection.Count() == 0)
+            var userCount = await UserCount();
+
+            if (id.IsNullOrWhiteSpace() ||userCount == 0)
                 return null;
 
-            return UsersCollection.FindOneById(id);
+            using (var cursor = await UsersCollection.FindAsync(m => m.Id == id))
+            {
+                return await cursor.MoveNextAsync() ? cursor.Current.FirstOrDefault() : null;
+            }
         }
 
-        public User GetByUserName(string applicationName, string username)
+        public async Task<User> GetByUserName(string applicationName, string username)
         {
-            if (username.IsNullOrWhiteSpace() || UsersCollection.Count() == 0)
+            var userCount = await UserCount();
+
+
+            if (username.IsNullOrWhiteSpace() || userCount == 0)
+                return null;
+            
+            var lowercaseUserName = username.ToLowerInvariant();
+
+            using (var cursor = await UsersCollection.FindAsync(user =>
+                user.ApplicationName == applicationName &&
+                user.UsernameLowercase == lowercaseUserName &&
+                user.IsDeleted == false))
+            {
+                return await cursor.MoveNextAsync() ? cursor.Current.FirstOrDefault() : null;
+
+            }
+        }
+
+        public async Task<User> GetByEmail(string applicationName, string email)
+        {
+            var userCount = await UserCount();
+
+            if (email.IsNullOrWhiteSpace() || userCount == 0)
                 return null;
 
-            return UsersCollection
-                    .AsQueryable()
-                    .SingleOrDefault(user
-                        => user.ApplicationName == applicationName
-                        && user.UsernameLowercase == username.ToLowerInvariant()
-                        && user.IsDeleted == false);
-        }
+            var lowercaseEmail = email.ToLowerInvariant();
 
-        public User GetByEmail(string applicationName, string email)
-        {
-            if (email.IsNullOrWhiteSpace() || UsersCollection.Count() == 0)
-                return null;
-
-            return UsersCollection
-                    .AsQueryable()
-                    .SingleOrDefault(user
-                        => user.ApplicationName == applicationName
-                        && user.EmailLowercase == email.ToLowerInvariant()
-                        && user.IsDeleted == false);
-        }
-
-        public IEnumerable<User> GetAllByEmail(string applicationName, string email, int pageIndex, int pageSize, out int totalRecords)
-        {
-            if (email.IsNullOrWhiteSpace() || UsersCollection.Count() == 0)
+            using (var cursor = await UsersCollection.FindAsync(user =>
+                user.ApplicationName == applicationName &&
+                user.EmailLowercase == lowercaseEmail &&
+                user.IsDeleted == false))
             {
-                totalRecords = 0;
-                return Enumerable.Empty<User>();
+
+                return await cursor.MoveNextAsync() ? cursor.Current.FirstOrDefault() : null;
+
             }
 
-            var users = UsersCollection
-                        .AsQueryable()
-                        .Where(user
-                            => user.ApplicationName == applicationName
-                            && user.EmailLowercase.Contains(email.ToLowerInvariant())
-                            && user.IsDeleted == false);
 
-            totalRecords = users.Count();
-            return users.Skip(pageIndex * pageSize).Take(pageSize);
         }
 
-        public IEnumerable<User> GetAllByUserName(string applicationName, string username, int pageIndex, int pageSize, out int totalRecords)
+        public async Task<ReturnResult> GetAllByEmail(string applicationName, string email, int pageIndex, int pageSize)
         {
-            if (username.IsNullOrWhiteSpace() || UsersCollection.Count() == 0)
+            var userCount = await UserCount();
+
+            if (email.IsNullOrWhiteSpace() || userCount == 0)
             {
-                totalRecords = 0;
-                return Enumerable.Empty<User>();
+                return new ReturnResult {TotalRecords = 0, Users = Enumerable.Empty<User>()};
             }
 
-            var users = UsersCollection
-                        .AsQueryable()
-                        .Where(user
-                            => user.ApplicationName == applicationName
-                            && user.UsernameLowercase.Contains(username.ToLowerInvariant())
-                            && user.IsDeleted == false);
+            var lowercaseEmail = email.ToLowerInvariant();
 
-            totalRecords = users.Count();
-            return users.Skip(pageIndex * pageSize).Take(pageSize);
+            using (var cursor = await UsersCollection.FindAsync(user =>
+                user.ApplicationName == applicationName &&
+                user.EmailLowercase == lowercaseEmail &&
+                user.IsDeleted == false,
+                new FindOptions<User>()
+                {
+                    Skip = pageIndex * pageSize,
+                    Limit = pageSize
+                }))
+            {
+                var users = new List<User>();
+                while (await cursor.MoveNextAsync())
+                {
+                    users.AddRange(cursor.Current.ToList());
+                }
+                return new ReturnResult { TotalRecords = users.Count, Users = users };
+
+
+            }
         }
 
-        public IEnumerable<User> GetAllAnonymByUserName(string applicationName, string username, int pageIndex, int pageSize, out int totalRecords)
+        public async Task<ReturnResult> GetAllByUserName(string applicationName, string username, int pageIndex, int pageSize)
         {
-            if (username.IsNullOrWhiteSpace() || UsersCollection.Count() == 0)
+            var userCount = await UserCount();
+
+            if (username.IsNullOrWhiteSpace() || userCount == 0)
             {
-                totalRecords = 0;
-                return Enumerable.Empty<User>();
+                return new ReturnResult { TotalRecords = 0, Users = Enumerable.Empty<User>() };
+
             }
 
-            var users = UsersCollection
-                .AsQueryable()
-                .Where(user
-                    => user.ApplicationName == applicationName
-                    && user.UsernameLowercase.Contains(username.ToLowerInvariant())
-                    && user.IsAnonymous
-                    && user.IsDeleted == false);
+            var lowercaseUserName = username.ToLowerInvariant();
 
-            totalRecords = users.Count();
-            return users.Skip(pageIndex * pageSize).Take(pageSize);
-        }
-
-        public IEnumerable<User> GetAll(string applicationName, int pageIndex, int pageSize, out int totalRecords)
-        {
-            totalRecords = (int)UsersCollection.Count();
-
-            if (totalRecords == 0)
-                return Enumerable.Empty<User>();
-
-            return UsersCollection
-                    .AsQueryable()
-                    .Where(user
-                        => user.ApplicationName == applicationName
-                        && user.IsDeleted == false)
-                    .Skip(pageIndex * pageSize)
-                    .Take(pageSize);
-        }
-
-        public IEnumerable<User> GetAllAnonym(string applicationName, int pageIndex, int pageSize, out int totalRecords)
-        {
-            if (UsersCollection.Count() == 0)
+             using (var cursor = await UsersCollection.FindAsync(user =>
+                user.ApplicationName == applicationName &&
+                user.UsernameLowercase == lowercaseUserName &&
+                user.IsDeleted == false,
+                new FindOptions<User>()
+                {
+                    Skip = pageIndex * pageSize,
+                    Limit = pageSize
+                }))
             {
-                totalRecords = 0;
-                return Enumerable.Empty<User>();
+                var users = new List<User>();
+                while (await cursor.MoveNextAsync())
+                {
+                    users.AddRange(cursor.Current.ToList());
+                }
+                return new ReturnResult { TotalRecords = users.Count, Users = users };
+
+
+            }
+        }
+
+        public async Task<ReturnResult> GetAllAnonymByUserName(string applicationName, string username,int pageIndex, int pageSize)
+        {
+            var userCount = await UserCount();
+
+            if (username.IsNullOrWhiteSpace() || userCount == 0)
+            {
+                return new ReturnResult { TotalRecords = 0, Users = Enumerable.Empty<User>() };
+
+            }
+            var lowercaseUserName = username.ToLowerInvariant();
+
+            using (var cursor = await UsersCollection.FindAsync(user =>
+                user.ApplicationName == applicationName &&
+                user.UsernameLowercase == lowercaseUserName &&
+                user.IsDeleted == false && 
+                user.IsAnonymous,
+                new FindOptions<User>()
+                {
+                    Skip = pageIndex * pageSize,
+                    Limit = pageSize
+                }))
+            {
+                var users = new List<User>();
+                while (await cursor.MoveNextAsync())
+                {
+                    users.AddRange(cursor.Current.ToList());
+                }
+                return new ReturnResult { TotalRecords = users.Count, Users = users };
+
+
+            }
+        }
+
+        public async Task<ReturnResult> GetAll(string applicationName, int pageIndex, int pageSize)
+        {
+            var userCount = await UserCount();
+
+            if (userCount == 0)
+                return new ReturnResult { TotalRecords = 0, Users = Enumerable.Empty<User>() };
+
+
+            using (var cursor = await UsersCollection.FindAsync(user =>
+                user.ApplicationName == applicationName &&
+                user.IsDeleted == false,
+                new FindOptions<User>()
+                {
+                    Skip = pageIndex*pageSize,
+                    Limit = pageSize
+                }))
+            {
+                var users = new List<User>();
+                while (await cursor.MoveNextAsync())
+                {
+                    users.AddRange(cursor.Current.ToList());
+                }
+                return new ReturnResult {TotalRecords = users.Count, Users = users};
+
+            }
+        }
+
+        public async Task<ReturnResult> GetAllAnonym(string applicationName, int pageIndex, int pageSize)
+        {
+            var userCount = await UserCount();
+
+            if (userCount == 0)
+                return new ReturnResult {TotalRecords = 0, Users = Enumerable.Empty<User>()};
+
+            using (var cursor = await UsersCollection.FindAsync(user =>
+                user.ApplicationName == applicationName &&
+                user.IsDeleted == false&&
+                user.IsAnonymous,
+                new FindOptions<User>()
+                {
+                    Skip = pageIndex * pageSize,
+                    Limit = pageSize
+                }))
+            {
+                var users = new List<User>();
+                while (await cursor.MoveNextAsync())
+                {
+                    users.AddRange(cursor.Current.ToList());
+                }
+                return new ReturnResult { TotalRecords = users.Count, Users = users };
+
             }
 
-            var users = UsersCollection
-                .AsQueryable()
-                .Where(user
-                    => user.ApplicationName == applicationName
-                    && user.IsAnonymous
-                    && user.IsDeleted == false);
 
-            totalRecords = users.Count();
-            return users.Skip(pageIndex * pageSize).Take(pageSize);
         }
 
-        public IEnumerable<User> GetAllInactiveSince(string applicationName, DateTime inactiveDate, int pageIndex, int pageSize, out int totalRecords)
+        public async Task<ReturnResult> GetAllInactiveSince(string applicationName, DateTime inactiveDate, int pageIndex, int pageSize)
         {
-            if (UsersCollection.Count() == 0)
+            var userCount = await UserCount();
+
+            if (userCount == 0)
+                return new ReturnResult { TotalRecords = 0, Users = Enumerable.Empty<User>() };
+
+            using (var cursor = await UsersCollection.FindAsync(user =>
+                user.ApplicationName == applicationName &&
+                user.LastActivityDate <= inactiveDate &&
+                user.IsDeleted == false,
+                new FindOptions<User>()
+                {
+                    Skip = pageIndex * pageSize,
+                    Limit = pageSize
+                }))
             {
-                totalRecords = 0;
-                return Enumerable.Empty<User>();
-            }
+                var users = new List<User>();
+                while (await cursor.MoveNextAsync())
+                {
+                    users.AddRange(cursor.Current.ToList());
+                }
+                return new ReturnResult { TotalRecords = users.Count, Users = users };
 
-            var users = UsersCollection
-                        .AsQueryable()
-                        .Where(user
-                            => user.ApplicationName == applicationName
-                            && user.LastActivityDate <= inactiveDate
-                            && user.IsDeleted == false);
-            totalRecords = users.Count();
-            return users
-                    .Skip(pageIndex * pageSize)
-                    .Take(pageSize);
+            }
         }
 
-        public IEnumerable<User> GetAllInactiveAnonymSince(string applicationName, DateTime inactiveDate, int pageIndex, int pageSize, out int totalRecords)
+        public async Task<ReturnResult>  GetAllInactiveAnonymSince(string applicationName, DateTime inactiveDate, int pageIndex, int pageSize)
         {
-            if (UsersCollection.Count() == 0)
+            var userCount = await UserCount();
+
+            if (userCount == 0)
+                    return new ReturnResult { TotalRecords = 0, Users = Enumerable.Empty<User>() };
+
+            using (var cursor = await UsersCollection.FindAsync(user =>
+                user.ApplicationName == applicationName &&
+                user.LastActivityDate <= inactiveDate &&
+                user.IsAnonymous &&
+                user.IsDeleted == false,
+                new FindOptions<User>()
+                {
+                    Skip = pageIndex * pageSize,
+                    Limit = pageSize
+                }))
             {
-                totalRecords = 0;
-                return Enumerable.Empty<User>();
-            }
+                var users = new List<User>();
+                while (await cursor.MoveNextAsync())
+                {
+                    users.AddRange(cursor.Current.ToList());
+                }
+                return new ReturnResult { TotalRecords = users.Count, Users = users };
 
-            var users = UsersCollection
-                        .AsQueryable()
-                        .Where(user
-                            => user.ApplicationName == applicationName
-                            && user.LastActivityDate <= inactiveDate
-                            && user.IsAnonymous
-                            && user.IsDeleted == false);
-            totalRecords = users.Count();
-            return users
-                    .Skip(pageIndex * pageSize)
-                    .Take(pageSize);
+            }
         }
 
-        public IEnumerable<User> GetInactiveSinceByUserName(string applicationName, string username, DateTime userInactiveSinceDate, int pageIndex, int pageSize, out int totalRecords)
+        public async Task<ReturnResult> GetInactiveSinceByUserName(string applicationName, string username, DateTime userInactiveSinceDate, int pageIndex, int pageSize)
         {
-            if (UsersCollection.Count() == 0)
+            var userCount = await UserCount();
+
+            if (userCount == 0)
+                return new ReturnResult { TotalRecords = 0, Users = Enumerable.Empty<User>() };
+
+            var lowercaseUserName = username.ToLowerInvariant();
+
+            using (var cursor = await UsersCollection.FindAsync(user =>
+               user.ApplicationName == applicationName &&
+               user.UsernameLowercase == lowercaseUserName &&
+               user.LastActivityDate <= userInactiveSinceDate &&
+               user.IsDeleted == false,
+               new FindOptions<User>()
+               {
+                   Skip = pageIndex * pageSize,
+                   Limit = pageSize
+               }))
             {
-                totalRecords = 0;
-                return Enumerable.Empty<User>();
-            }
+                var users = new List<User>();
+                while (await cursor.MoveNextAsync())
+                {
+                    users.AddRange(cursor.Current.ToList());
+                }
+                return new ReturnResult { TotalRecords = users.Count, Users = users };
 
-            var users = UsersCollection
-                        .AsQueryable()
-                        .Where(user
-                            => user.ApplicationName == applicationName
-                            && user.UsernameLowercase.Contains(username.ToLowerInvariant())
-                            && user.LastActivityDate <= userInactiveSinceDate
-                            && user.IsDeleted == false);
-            totalRecords = users.Count();
-            return users
-                    .Skip(pageIndex * pageSize)
-                    .Take(pageSize);
+            }
         }
 
-        public IEnumerable<User> GetInactiveAnonymSinceByUserName(string applicationName, string username, DateTime userInactiveSinceDate, int pageIndex, int pageSize, out int totalRecords)
+        public async Task<ReturnResult> GetInactiveAnonymSinceByUserName(string applicationName, string username, DateTime userInactiveSinceDate, int pageIndex, int pageSize)
         {
-            if (UsersCollection.Count() == 0)
+            var userCount = await UserCount();
+
+            if (userCount == 0)
+                return new ReturnResult { TotalRecords = 0, Users = Enumerable.Empty<User>() };
+
+            var lowercaseUserName = username.ToLowerInvariant();
+
+            using (var cursor = await UsersCollection.FindAsync(user =>
+              user.ApplicationName == applicationName &&
+              user.UsernameLowercase == lowercaseUserName &&
+              user.LastActivityDate <= userInactiveSinceDate &&
+              user.IsAnonymous &&
+              user.IsDeleted == false,
+              new FindOptions<User>()
+              {
+                  Skip = pageIndex * pageSize,
+                  Limit = pageSize
+              }))
             {
-                totalRecords = 0;
-                return Enumerable.Empty<User>();
-            }
+                var users = new List<User>();
+                while (await cursor.MoveNextAsync())
+                {
+                    users.AddRange(cursor.Current.ToList());
+                }
+                return new ReturnResult { TotalRecords = users.Count, Users = users };
 
-            var users = UsersCollection
-                        .AsQueryable()
-                        .Where(user
-                            => user.ApplicationName == applicationName
-                            && user.UsernameLowercase.Contains(username.ToLowerInvariant())
-                            && user.LastActivityDate <= userInactiveSinceDate
-                            && user.IsAnonymous
-                            && user.IsDeleted == false);
-            totalRecords = users.Count();
-            return users
-                    .Skip(pageIndex * pageSize)
-                    .Take(pageSize);
+            }
         }
 
-        public int GetUserForPeriodOfTime(string applicationName, TimeSpan timeSpan)
+        public async Task<long> GetUserForPeriodOfTime(string applicationName, TimeSpan timeSpan)
         {
-            return UsersCollection
-                    .AsQueryable()
-                    .Count(user
-                        => user.ApplicationName == applicationName
-                        && user.LastActivityDate > DateTime.UtcNow.Subtract(timeSpan));
+            var timespan = DateTime.UtcNow.Subtract(timeSpan);
+            return await 
+                UsersCollection.CountAsync(
+                    user => user.ApplicationName == applicationName && user.LastActivityDate > timespan);
+
         }
         #endregion
 
@@ -289,38 +404,38 @@ namespace MongoMembership.Mongo
         {
             if (role.RoleName != null) role.RoleNameLowercased = role.RoleName.ToLowerInvariant();
 
-            RolesCollection.Insert(role);
+            RolesCollection.InsertOneAsync(role);
         }
 
         public void RemoveRole(string applicationName, string roleName)
         {
-            var query = new QueryDocument
-            {
-                new Dictionary<string, object>
-                {
-                    {Util.GetElementNameFor<Role>(_ => _.ApplicationName), applicationName},
-                    {Util.GetElementNameFor<Role>(_ => _.RoleNameLowercased), roleName.ToLowerInvariant()}
-                }
-            };
-
-            RolesCollection.Remove(query);
+            RolesCollection.DeleteOneAsync(Builders<Role>.Filter.And(
+              Builders<Role>.Filter.Eq(Util.GetElementNameFor<Role>(_ => _.ApplicationName), applicationName),
+              Builders<Role>.Filter.Eq(Util.GetElementNameFor<Role>(_ => _.RoleNameLowercased), applicationName)
+              ));
         }
 
-        public string[] GetAllRoles(string applicationName)
+        public async Task<string[]> GetAllRoles(string applicationName)
         {
-            return RolesCollection
-                    .AsQueryable()
-                    .Where(role => role.ApplicationName == applicationName)
-                    .Select(role => role.RoleName)
-                    .ToArray();
+            using (var cursor = await RolesCollection.FindAsync(role =>
+                role.ApplicationName == applicationName))
+            {
+                var roles = new List<Role>();
+                while (await cursor.MoveNextAsync())
+                {
+                    roles.AddRange(cursor.Current.ToList());
+                }
+                return roles.Select(role => role.RoleName).ToArray();
+
+            }
         }
 
-        public string[] GetRolesForUser(string applicationName, string username)
+        public async Task<string[]> GetRolesForUser(string applicationName, string username)
         {
             if (username.IsNullOrWhiteSpace())
                 return null;
 
-            User user = GetByUserName(applicationName, username);
+            var user = await GetByUserName(applicationName, username);
 
             if (user == null || user.Roles == null)
                 return null;
@@ -328,44 +443,68 @@ namespace MongoMembership.Mongo
             return user.Roles.ToArray();
         }
 
-        public string[] GetUsersInRole(string applicationName, string roleName)
+        public async Task<string[]> GetUsersInRole(string applicationName, string roleName)
         {
             if (roleName.IsNullOrWhiteSpace())
                 return null;
 
-            return UsersCollection
-                    .AsQueryable()
-                    .Where(user
-                        => user.ApplicationName == applicationName
-                        && (user.Roles.Contains(roleName.ToLowerInvariant()) || user.Roles.Contains(roleName)))
-                    .Select(user => user.Username)
-                    .ToArray();
+
+            using (var cursor = await UsersCollection.FindAsync(
+                Builders<User>.Filter.And(
+                Builders<User>.Filter.Eq(m => m.ApplicationName, applicationName),
+                Builders<User>.Filter.Or(
+                                Builders<User>.Filter.ElemMatch(m => m.Roles, roleName.ToLowerInvariant()),
+                                Builders<User>.Filter.ElemMatch(m => m.Roles, roleName)
+
+                ))))
+            {
+                var users = new List<User>();
+                while (await cursor.MoveNextAsync())
+                {
+                    users.AddRange(cursor.Current.ToList());
+                }
+                return users.Select(role => role.Username).ToArray();
+
+            }
         }
 
-        public bool IsUserInRole(string applicationName, string username, string roleName)
+        public async Task<bool> IsUserInRole(string applicationName, string username, string roleName)
         {
             if (username.IsNullOrWhiteSpace() || roleName.IsNullOrWhiteSpace())
                 return false;
 
-            return UsersCollection
-                    .AsQueryable()
-                    .Any(user
-                        => user.ApplicationName == applicationName
-                        && user.UsernameLowercase == username.ToLowerInvariant()
-                        && (user.Roles.Contains(roleName.ToLowerInvariant()) || user.Roles.Contains(roleName)));
+            var lowercaseUserName = username.ToLowerInvariant();
+            var lowercaseRoleName = roleName.ToLowerInvariant();
+
+
+            return await UsersCollection.CountAsync(
+                Builders<User>.Filter.And(
+                    Builders<User>.Filter.Eq(m => m.ApplicationName, applicationName),
+                    Builders<User>.Filter.Eq(m => m.UsernameLowercase, lowercaseUserName),
+                    Builders<User>.Filter.Or(
+                        Builders<User>.Filter.ElemMatch(m => m.Roles, lowercaseRoleName),
+                        Builders<User>.Filter.ElemMatch(m => m.Roles, roleName)
+
+                        ))) > 0;
         }
 
-        public bool IsRoleExists(string applicationName, string roleName)
+        public async Task<bool> IsRoleExists(string applicationName, string roleName)
         {
             if (roleName.IsNullOrWhiteSpace())
                 return false;
 
-            return RolesCollection
-                    .AsQueryable()
-                    .Any(role
+            var lowercaseRoleName = roleName.ToLowerInvariant();
+            
+            return await RolesCollection.CountAsync(role
                         => role.ApplicationName == applicationName
-                        && role.RoleNameLowercased == roleName.ToLowerInvariant());
+                        && role.RoleNameLowercased == lowercaseRoleName) > 0;
         }
+
+        public async Task<long> UserCount()
+        {
+           return await UsersCollection.CountAsync(new BsonDocument());
+        }
+
         #endregion
 
         #region Private Methods
@@ -422,20 +561,65 @@ namespace MongoMembership.Mongo
 
         private void CreateIndex()
         {
-            UsersCollection.EnsureIndex(Util.GetElementNameFor<User>(_ => _.ApplicationName));
-            UsersCollection.EnsureIndex(Util.GetElementNameFor<User>(_ => _.ApplicationName), Util.GetElementNameFor<User>(_ => _.EmailLowercase));
-            UsersCollection.EnsureIndex(Util.GetElementNameFor<User>(_ => _.ApplicationName), Util.GetElementNameFor<User>(_ => _.UsernameLowercase));
-            UsersCollection.EnsureIndex(Util.GetElementNameFor<User>(_ => _.ApplicationName), Util.GetElementNameFor<User>(_ => _.Roles));
-            UsersCollection.EnsureIndex(Util.GetElementNameFor<User>(_ => _.ApplicationName), Util.GetElementNameFor<User>(_ => _.Roles), Util.GetElementNameFor<User>(_ => _.UsernameLowercase));
-            UsersCollection.EnsureIndex(Util.GetElementNameFor<User>(_ => _.ApplicationName), Util.GetElementNameFor<User>(_ => _.IsAnonymous));
-            UsersCollection.EnsureIndex(Util.GetElementNameFor<User>(_ => _.ApplicationName), Util.GetElementNameFor<User>(_ => _.IsAnonymous), Util.GetElementNameFor<User>(_ => _.LastActivityDate));
-            UsersCollection.EnsureIndex(Util.GetElementNameFor<User>(_ => _.ApplicationName), Util.GetElementNameFor<User>(_ => _.IsAnonymous), Util.GetElementNameFor<User>(_ => _.LastActivityDate), Util.GetElementNameFor<User>(_ => _.UsernameLowercase));
-            UsersCollection.EnsureIndex(Util.GetElementNameFor<User>(_ => _.ApplicationName), Util.GetElementNameFor<User>(_ => _.IsAnonymous), Util.GetElementNameFor<User>(_ => _.UsernameLowercase));
-            UsersCollection.EnsureIndex(Util.GetElementNameFor<User>(_ => _.ApplicationName), Util.GetElementNameFor<User>(_ => _.UsernameLowercase), Util.GetElementNameFor<User>(_ => _.IsAnonymous));
-            UsersCollection.EnsureIndex(Util.GetElementNameFor<User>(_ => _.ApplicationName), Util.GetElementNameFor<User>(_ => _.LastActivityDate));
+            UsersCollection.Indexes.CreateOneAsync(Builders<User>.IndexKeys.Ascending(Util.GetElementNameFor<User>(_ => _.ApplicationName)));
 
-            RolesCollection.EnsureIndex(Util.GetElementNameFor<Role>(_ => _.ApplicationName));
-            RolesCollection.EnsureIndex(Util.GetElementNameFor<Role>(_ => _.ApplicationName), Util.GetElementNameFor<Role>(_ => _.RoleNameLowercased));
+            UsersCollection.Indexes.CreateOneAsync(Builders<User>.IndexKeys.Combine(
+                Builders<User>.IndexKeys.Ascending(Util.GetElementNameFor<User>(_ => _.ApplicationName)),
+                Builders<User>.IndexKeys.Ascending(Util.GetElementNameFor<User>(_ => _.EmailLowercase))));
+
+            UsersCollection.Indexes.CreateOneAsync(Builders<User>.IndexKeys.Combine(
+              Builders<User>.IndexKeys.Ascending(Util.GetElementNameFor<User>(_ => _.ApplicationName)),
+              Builders<User>.IndexKeys.Ascending(Util.GetElementNameFor<User>(_ => _.UsernameLowercase))));
+
+            UsersCollection.Indexes.CreateOneAsync(Builders<User>.IndexKeys.Combine(
+                Builders<User>.IndexKeys.Ascending(Util.GetElementNameFor<User>(_ => _.ApplicationName)),
+                Builders<User>.IndexKeys.Ascending(Util.GetElementNameFor<User>(_ => _.Roles))));
+
+
+            UsersCollection.Indexes.CreateOneAsync(Builders<User>.IndexKeys.Combine(
+                Builders<User>.IndexKeys.Ascending(Util.GetElementNameFor<User>(_ => _.ApplicationName)),
+                Builders<User>.IndexKeys.Ascending(Util.GetElementNameFor<User>(_ => _.Roles)),
+                Builders<User>.IndexKeys.Ascending(Util.GetElementNameFor<User>(_ => _.UsernameLowercase))));
+
+             UsersCollection.Indexes.CreateOneAsync(Builders<User>.IndexKeys.Combine(
+                Builders<User>.IndexKeys.Ascending(Util.GetElementNameFor<User>(_ => _.ApplicationName)),
+                Builders<User>.IndexKeys.Ascending(Util.GetElementNameFor<User>(_ => _.IsAnonymous))));
+
+
+             UsersCollection.Indexes.CreateOneAsync(Builders<User>.IndexKeys.Combine(
+                 Builders<User>.IndexKeys.Ascending(Util.GetElementNameFor<User>(_ => _.ApplicationName)),
+                 Builders<User>.IndexKeys.Ascending(Util.GetElementNameFor<User>(_ => _.IsAnonymous)),
+                 Builders<User>.IndexKeys.Ascending(Util.GetElementNameFor<User>(_ => _.LastActivityDate))));
+
+            UsersCollection.Indexes.CreateOneAsync(Builders<User>.IndexKeys.Combine(
+                Builders<User>.IndexKeys.Ascending(Util.GetElementNameFor<User>(_ => _.ApplicationName)),
+                Builders<User>.IndexKeys.Ascending(Util.GetElementNameFor<User>(_ => _.IsAnonymous)),
+                Builders<User>.IndexKeys.Ascending(Util.GetElementNameFor<User>(_ => _.LastActivityDate)),
+                Builders<User>.IndexKeys.Ascending(Util.GetElementNameFor<User>(_ => _.UsernameLowercase))));
+
+
+            UsersCollection.Indexes.CreateOneAsync(Builders<User>.IndexKeys.Combine(
+                Builders<User>.IndexKeys.Ascending(Util.GetElementNameFor<User>(_ => _.ApplicationName)),
+                Builders<User>.IndexKeys.Ascending(Util.GetElementNameFor<User>(_ => _.IsAnonymous)),
+                Builders<User>.IndexKeys.Ascending(Util.GetElementNameFor<User>(_ => _.UsernameLowercase))));
+
+
+            UsersCollection.Indexes.CreateOneAsync(Builders<User>.IndexKeys.Combine(
+                Builders<User>.IndexKeys.Ascending(Util.GetElementNameFor<User>(_ => _.ApplicationName)),
+                Builders<User>.IndexKeys.Ascending(Util.GetElementNameFor<User>(_ => _.UsernameLowercase)),
+                Builders<User>.IndexKeys.Ascending(Util.GetElementNameFor<User>(_ => _.IsAnonymous))));
+
+
+            UsersCollection.Indexes.CreateOneAsync(Builders<User>.IndexKeys.Combine(
+                Builders<User>.IndexKeys.Ascending(Util.GetElementNameFor<User>(_ => _.ApplicationName)),
+                Builders<User>.IndexKeys.Ascending(Util.GetElementNameFor<User>(_ => _.LastActivityDate))));
+
+
+            RolesCollection.Indexes.CreateOneAsync(Builders<Role>.IndexKeys.Ascending(Util.GetElementNameFor<Role>(_ => _.ApplicationName)));
+            RolesCollection.Indexes.CreateOneAsync(Builders<Role>.IndexKeys.Combine(
+               Builders<Role>.IndexKeys.Ascending(Util.GetElementNameFor<Role>(_ => _.ApplicationName)),
+               Builders<Role>.IndexKeys.Ascending(Util.GetElementNameFor<Role>(_ => _.RoleNameLowercased))));
+
         }
         #endregion
     }

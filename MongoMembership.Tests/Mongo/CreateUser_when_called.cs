@@ -16,7 +16,7 @@ namespace MongoMembership.Tests.Mongo
         Because of = () =>
         {
             mongo.CreateUser(user);
-            user_created = mongo.GetById(user.Id);
+            user_created = mongo.GetById(user.Id).Result;
         };
 
         It should_return_user_with_same_ApplicationName = () =>

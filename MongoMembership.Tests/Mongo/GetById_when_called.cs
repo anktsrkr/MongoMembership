@@ -15,7 +15,7 @@ namespace MongoMembership.Tests.Mongo
 
         Because of = () =>
         {
-            userReturned = mongo.GetById(userCreated.Id);
+            userReturned = mongo.GetById(userCreated.Id).Result;
         };
 
         It should_return_user_with_same_id_as_created = () =>

@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Collections.Specialized;
 using System.Configuration;
 using System.Linq;
+using System.Threading.Tasks;
 using System.Web.Hosting;
 using System.Web.Profile;
 using MongoMembership.Mongo;
@@ -38,11 +39,10 @@ namespace MongoMembership.Providers
             return DeleteProfiles(profileInfoCollection);
         }
 
-        public override int DeleteProfiles(string[] usernames)
+        public override  int DeleteProfiles(string[] usernames)
         {
             int countAffected = 0;
-
-            foreach (User user in usernames.Select(username => this.mongoGateway.GetByUserName(this.ApplicationName, username)))
+            foreach (var user in usernames.Select(username => this.mongoGateway.GetByUserName(this.ApplicationName, username).Result))
             {
                 this.mongoGateway.RemoveUser(user);
                 countAffected++;
@@ -64,15 +64,21 @@ namespace MongoMembership.Providers
             totalRecords = 0;
 
             var users = Enumerable.Empty<User>();
+            ReturnResult returnResult;
 
             switch (authenticationOption)
             {
                 case ProfileAuthenticationOption.Anonymous:
-                    users = this.mongoGateway.GetInactiveAnonymSinceByUserName(this.ApplicationName, usernameToMatch, userInactiveSinceDate, pageIndex, pageSize, out totalRecords);
+                    returnResult =this.mongoGateway.GetInactiveAnonymSinceByUserName(this.ApplicationName, usernameToMatch,
+                        userInactiveSinceDate, pageIndex, pageSize).Result;
+                    users = returnResult.Users;
+                    totalRecords =(int)returnResult.TotalRecords;
                     break;
                 case ProfileAuthenticationOption.Authenticated:
                 case ProfileAuthenticationOption.All:
-                    users = this.mongoGateway.GetInactiveSinceByUserName(this.ApplicationName, usernameToMatch, userInactiveSinceDate, pageIndex, pageSize, out totalRecords);
+                    returnResult = this.mongoGateway.GetInactiveSinceByUserName(this.ApplicationName, usernameToMatch, userInactiveSinceDate, pageIndex, pageSize).Result;
+                    users = returnResult.Users;
+                    totalRecords =(int)returnResult.TotalRecords;
                     break;
             }
 
@@ -84,15 +90,20 @@ namespace MongoMembership.Providers
             totalRecords = 0;
 
             var users = Enumerable.Empty<User>();
+            ReturnResult returnResult;
 
             switch (authenticationOption)
             {
                 case ProfileAuthenticationOption.Anonymous:
-                    users = this.mongoGateway.GetAllAnonymByUserName(this.ApplicationName, usernameToMatch, pageIndex, pageSize, out totalRecords);
+                    returnResult = this.mongoGateway.GetAllAnonymByUserName(this.ApplicationName, usernameToMatch, pageIndex, pageSize).Result;
+                    users = returnResult.Users;
+                    totalRecords = (int)returnResult.TotalRecords;
                     break;
                 case ProfileAuthenticationOption.Authenticated:
                 case ProfileAuthenticationOption.All:
-                    users = this.mongoGateway.GetAllByUserName(this.ApplicationName, usernameToMatch, pageIndex, pageSize, out totalRecords);
+                    returnResult = this.mongoGateway.GetAllByUserName(this.ApplicationName, usernameToMatch, pageIndex, pageSize).Result;
+                    users = returnResult.Users;
+                    totalRecords = (int)returnResult.TotalRecords;
                     break;
             }
 
@@ -103,15 +114,19 @@ namespace MongoMembership.Providers
         {
             totalRecords = 0;
             var users = Enumerable.Empty<User>();
-
+             ReturnResult returnResult;
             switch (authenticationOption)
             {
                 case ProfileAuthenticationOption.Anonymous:
-                    users = this.mongoGateway.GetAllInactiveAnonymSince(this.ApplicationName, userInactiveSinceDate, pageIndex, pageSize, out totalRecords);
+                    returnResult = this.mongoGateway.GetAllInactiveAnonymSince(this.ApplicationName, userInactiveSinceDate, pageIndex, pageSize).Result;
+                    users = returnResult.Users;
+                    totalRecords = (int)returnResult.TotalRecords;
                     break;
                 case ProfileAuthenticationOption.Authenticated:
                 case ProfileAuthenticationOption.All:
-                    users = this.mongoGateway.GetAllInactiveSince(this.ApplicationName, userInactiveSinceDate, pageIndex, pageSize, out totalRecords);
+                    returnResult = this.mongoGateway.GetAllInactiveSince(this.ApplicationName, userInactiveSinceDate, pageIndex, pageSize).Result;
+                    users = returnResult.Users;
+                    totalRecords = (int)returnResult.TotalRecords;
                     break;
             }
 
@@ -123,15 +138,20 @@ namespace MongoMembership.Providers
             totalRecords = 0;
 
             var users = Enumerable.Empty<User>();
+                         ReturnResult returnResult;
 
             switch (authenticationOption)
             {
                 case ProfileAuthenticationOption.Anonymous:
-                    users = this.mongoGateway.GetAllAnonym(this.ApplicationName, pageIndex, pageSize, out totalRecords);
+                    returnResult = this.mongoGateway.GetAllAnonym(this.ApplicationName, pageIndex, pageSize).Result;
+                    users = returnResult.Users;
+                    totalRecords = (int)returnResult.TotalRecords;
                     break;
                 case ProfileAuthenticationOption.Authenticated:
                 case ProfileAuthenticationOption.All:
-                    users = this.mongoGateway.GetAll(this.ApplicationName, pageIndex, pageSize, out totalRecords);
+                    returnResult = this.mongoGateway.GetAll(this.ApplicationName, pageIndex, pageSize).Result;
+                    users = returnResult.Users;
+                    totalRecords = (int)returnResult.TotalRecords;
                     break;
             }
 
@@ -161,7 +181,7 @@ namespace MongoMembership.Providers
             if (username.IsNullOrWhiteSpace() || collection.Count < 1)
                 return settingsPropertyValueCollection;
 
-            User user = this.mongoGateway.GetByUserName(this.ApplicationName, username);
+            User user = this.mongoGateway.GetByUserName(this.ApplicationName, username).Result;
 
             foreach (SettingsProperty property in collection)
             {
@@ -201,7 +221,7 @@ namespace MongoMembership.Providers
                 values.Add(value.Name, value.PropertyValue);
             }
 
-            var user = this.mongoGateway.GetByUserName(this.ApplicationName, username)
+            var user = this.mongoGateway.GetByUserName(this.ApplicationName, username).Result
                     ?? new User
                     {
                         ApplicationName = this.ApplicationName,

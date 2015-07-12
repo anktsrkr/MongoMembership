@@ -16,7 +16,7 @@ namespace MongoMembership.Tests.Mongo
 
         Because of = () =>
         {
-            isRoleExists = mongo.IsRoleExists(role.ApplicationName, role.RoleName.ToLowerInvariant());
+            isRoleExists = mongo.IsRoleExists(role.ApplicationName, role.RoleName.ToLowerInvariant()).Result;
         };
 
         It should_be_found = () =>

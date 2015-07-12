@@ -112,7 +112,7 @@ namespace MongoMembership.Providers
         {
             if (username.IsNullOrWhiteSpace()) return false;
 
-            var user = this.mongoGateway.GetByUserName(this.ApplicationName, username);
+            var user = this.mongoGateway.GetByUserName(this.ApplicationName, username).Result;
 
             if (!IsPasswordCorrect(user, oldPassword))
                 return false;
@@ -133,7 +133,7 @@ namespace MongoMembership.Providers
         {
             if (username.IsNullOrWhiteSpace()) return false;
 
-            var user = this.mongoGateway.GetByUserName(this.ApplicationName, username);
+            var user = this.mongoGateway.GetByUserName(this.ApplicationName, username).Result;
 
             if (!IsPasswordCorrect(user, password))
                 return false;
@@ -231,7 +231,7 @@ namespace MongoMembership.Providers
         public override bool DeleteUser(string username, bool deleteAllRelatedData)
         {
             if (username.IsNullOrWhiteSpace()) return false;
-            var user = this.mongoGateway.GetByUserName(this.ApplicationName, username);
+            var user = this.mongoGateway.GetByUserName(this.ApplicationName, username).Result;
 
             this.mongoGateway.RemoveUser(user);
             return true;
@@ -240,7 +240,10 @@ namespace MongoMembership.Providers
         public override MembershipUserCollection FindUsersByEmail(string emailToMatch, int pageIndex, int pageSize, out int totalRecords)
         {
             var membershipUsers = new MembershipUserCollection();
-            var users = this.mongoGateway.GetAllByEmail(this.ApplicationName, emailToMatch, pageIndex, pageSize, out totalRecords);
+
+            var returnResult = this.mongoGateway.GetAllByEmail(this.ApplicationName, emailToMatch, pageIndex, pageSize).Result;
+            var users = returnResult.Users;
+            totalRecords = (int)returnResult.TotalRecords;
 
             foreach (var user in users)
             {
@@ -253,8 +256,10 @@ namespace MongoMembership.Providers
         public override MembershipUserCollection FindUsersByName(string usernameToMatch, int pageIndex, int pageSize, out int totalRecords)
         {
             var membershipUsers = new MembershipUserCollection();
-            var users = this.mongoGateway.GetAllByUserName(this.ApplicationName, usernameToMatch, pageIndex, pageSize, out totalRecords);
-
+            var returnResult = this.mongoGateway.GetAllByUserName(this.ApplicationName, usernameToMatch, pageIndex, pageSize).Result;
+            var users = returnResult.Users;
+            totalRecords = (int)returnResult.TotalRecords;
+       
             foreach (var user in users)
             {
                 membershipUsers.Add(ToMembershipUser(user));
@@ -266,8 +271,9 @@ namespace MongoMembership.Providers
         public override MembershipUserCollection GetAllUsers(int pageIndex, int pageSize, out int totalRecords)
         {
             var membershipUsers = new MembershipUserCollection();
-            var users = this.mongoGateway.GetAll(this.ApplicationName, pageIndex, pageSize, out totalRecords);
-
+            var returnResult =  this.mongoGateway.GetAll(this.ApplicationName, pageIndex, pageSize).Result;
+            var users = returnResult.Users;
+            totalRecords = (int)returnResult.TotalRecords;
             foreach (var user in users)
             {
                 membershipUsers.Add(ToMembershipUser(user));
@@ -279,7 +285,7 @@ namespace MongoMembership.Providers
         public override int GetNumberOfUsersOnline()
         {
             var timeSpan = TimeSpan.FromMinutes(Membership.UserIsOnlineTimeWindow);
-            return this.mongoGateway.GetUserForPeriodOfTime(this.ApplicationName, timeSpan);
+            return (int)this.mongoGateway.GetUserForPeriodOfTime(this.ApplicationName, timeSpan).Result;
         }
 
         public override string GetPassword(string username, string answer)
@@ -287,7 +293,7 @@ namespace MongoMembership.Providers
             if (!this.EnablePasswordRetrieval)
                 throw new NotSupportedException("This Membership Provider has not been configured to support password retrieval.");
 
-            var user = this.mongoGateway.GetByUserName(this.ApplicationName, username);
+            var user = this.mongoGateway.GetByUserName(this.ApplicationName, username).Result;
 
             if (this.RequiresQuestionAndAnswer && !VerifyPasswordAnswer(user, answer))
                 throw new MembershipPasswordException("The password-answer supplied is invalid.");
@@ -297,7 +303,7 @@ namespace MongoMembership.Providers
 
         public override MembershipUser GetUser(string username, bool userIsOnline)
         {
-            var user = this.mongoGateway.GetByUserName(this.ApplicationName, username);
+            var user = this.mongoGateway.GetByUserName(this.ApplicationName, username).Result;
 
             if (user == null)
                 return null;
@@ -313,7 +319,7 @@ namespace MongoMembership.Providers
 
         public override MembershipUser GetUser(object providerUserKey, bool userIsOnline)
         {
-            var user = this.mongoGateway.GetById(providerUserKey.ToString());
+            var user = this.mongoGateway.GetById(providerUserKey.ToString()).Result;
 
             if (user == null)
                 return null;
@@ -329,7 +335,7 @@ namespace MongoMembership.Providers
 
         public override string GetUserNameByEmail(string email)
         {
-            var user = this.mongoGateway.GetByEmail(this.ApplicationName, email);
+            var user = this.mongoGateway.GetByEmail(this.ApplicationName, email).Result;
             return user == null ? null : user.Username;
         }
 
@@ -338,7 +344,7 @@ namespace MongoMembership.Providers
             if (!this.EnablePasswordReset)
                 throw new NotSupportedException("This provider is not configured to allow password resets. To enable password reset, set enablePasswordReset to \"true\" in the configuration file.");
 
-            var user = this.mongoGateway.GetByUserName(this.ApplicationName, username);
+            var user = this.mongoGateway.GetByUserName(this.ApplicationName, username).Result;
 
             if (this.RequiresQuestionAndAnswer && !VerifyPasswordAnswer(user, answer))
                 throw new MembershipPasswordException("The password-answer supplied is invalid.");
@@ -355,7 +361,7 @@ namespace MongoMembership.Providers
         {
             if (username.IsNullOrWhiteSpace()) return false;
 
-            var user = this.mongoGateway.GetByUserName(this.ApplicationName, username);
+            var user = this.mongoGateway.GetByUserName(this.ApplicationName, username).Result;
             if (user == null) return false;
 
             user.FailedPasswordAttemptCount = 0;
@@ -370,7 +376,7 @@ namespace MongoMembership.Providers
 
         public override void UpdateUser(MembershipUser membershipUser)
         {
-            var user = this.mongoGateway.GetById(membershipUser.ProviderUserKey.ToString());
+            var user = this.mongoGateway.GetById(membershipUser.ProviderUserKey.ToString()).Result;
 
             if (user == null)
                 throw new ProviderException("The membershipUser was not found.");
@@ -387,7 +393,7 @@ namespace MongoMembership.Providers
 
         public override bool ValidateUser(string username, string password)
         {
-            var user = this.mongoGateway.GetByUserName(this.ApplicationName, username);
+            var user = this.mongoGateway.GetByUserName(this.ApplicationName, username).Result;
 
             if (user == null || !user.IsApproved || user.IsLockedOut)
                 return false;
